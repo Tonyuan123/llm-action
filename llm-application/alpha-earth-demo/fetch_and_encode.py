@@ -7,13 +7,16 @@
     - 原生分辨率 10 m
 
 前置:
-    pip install earthengine-api requests
-    earthengine authenticate          # 首次需登录
-    # 或者 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json 使用服务账号
+    pip install -r requirements.txt
+    # 二选一:
+    #   1) earthengine authenticate              # 交互式 OAuth (本机推荐)
+    #   2) --key-file /path/to/sa.json           # 服务账号 (CI/headless 推荐)
 
 用法示例:
     python fetch_and_encode.py --project my-gee-project \\
         --lon 116.397 --lat 39.908 --year 2024
+    python fetch_and_encode.py --project my-gee-project \\
+        --key-file sa.json --service-account ee-bot@my-gee-project.iam.gserviceaccount.com
 """
 
 import argparse
@@ -30,8 +33,15 @@ ALPHA_EARTH_COLLECTION = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
-def init_ee(project: str | None) -> None:
-    if project:
+def init_ee(project: str | None, key_file: str | None, service_account: str | None) -> None:
+    if key_file:
+        # 服务账号方式: 若没显式给 email，从 JSON 里读 client_email
+        if not service_account:
+            import json
+            service_account = json.loads(Path(key_file).read_text())["client_email"]
+        creds = ee.ServiceAccountCredentials(service_account, key_file)
+        ee.Initialize(credentials=creds, project=project)
+    elif project:
         ee.Initialize(project=project)
     else:
         ee.Initialize()
@@ -87,6 +97,8 @@ def validate_base64_png(b64: str) -> dict:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--project", default=None, help="GEE Cloud Project ID")
+    p.add_argument("--key-file", default=None, help="服务账号 JSON 路径")
+    p.add_argument("--service-account", default=None, help="服务账号邮箱 (省略则从 key-file 里读)")
     p.add_argument("--year", type=int, default=2024)
     p.add_argument("--lon", type=float, default=116.397)
     p.add_argument("--lat", type=float, default=39.908)
@@ -102,7 +114,7 @@ def main() -> int:
     p.add_argument("--out-b64", default="alpha_earth.b64")
     args = p.parse_args()
 
-    init_ee(args.project)
+    init_ee(args.project, args.key_file, args.service_account)
     image, region = build_image(args.year, args.lon, args.lat, args.buffer)
     png_bytes = fetch_png(image, region, args.bands, args.scale)
     Path(args.out).write_bytes(png_bytes)
